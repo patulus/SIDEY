@@ -509,6 +509,8 @@ public sealed class DistributionSourceTests
         Assert.Contains("MUI_FINISHPAGE_RUN_FUNCTION LaunchSideyAsDesktopUser", setup, StringComparison.Ordinal);
         Assert.DoesNotContain("MUI_FINISHPAGE_RUN \"$INSTDIR\\SIDEY.exe\"", setup, StringComparison.Ordinal);
         Assert.Contains("--launch-sidey-as-desktop-user", setup, StringComparison.Ordinal);
+        Assert.Contains("--request-shutdown-as-desktop-user", setup, StringComparison.Ordinal);
+        Assert.Contains("--enable-startup-as-desktop-user", setup, StringComparison.Ordinal);
         Assert.Contains("--cleanup-startup-as-desktop-user", setup, StringComparison.Ordinal);
         Assert.DoesNotContain("exception.Message", helper, StringComparison.Ordinal);
         Assert.DoesNotContain("--run-windows-app-runtime-as-desktop-user", helper, StringComparison.Ordinal);
@@ -522,6 +524,65 @@ public sealed class DistributionSourceTests
         Assert.Contains("IsCurrentDesktopUser", helper, StringComparison.Ordinal);
         Assert.Contains("WindowsIdentity", helper, StringComparison.Ordinal);
         Assert.Contains("Registry.CurrentUser", helper, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SuccessfulFreshInstallAndUpdateForceStartupOnWithoutTouchingUserSettings()
+    {
+        string setup = ReadSetupScript();
+        string helper = File.ReadAllText(RepositoryPath(
+            "windows", "src", "Sidey.Uninstaller", "Program.cs"));
+        string transaction = File.ReadAllText(RepositoryPath(
+            "windows", "installer", "Sidey.Setup", "InstallTransaction.cs"));
+        string app = File.ReadAllText(RepositoryPath(
+            "windows", "src", "Sidey.App", "App.xaml.cs"));
+        int mainSectionStart = setup.IndexOf("Section \"SIDEY\" MainSection", StringComparison.Ordinal);
+        string mainSection = setup[mainSectionStart..setup.IndexOf(
+            "SectionEnd",
+            mainSectionStart,
+            StringComparison.Ordinal)];
+
+        int commit = mainSection.IndexOf(
+            "RunInstallTransaction \"Commit\"",
+            StringComparison.Ordinal);
+        int enableStartup = mainSection.IndexOf(
+            "--enable-startup-as-desktop-user",
+            StringComparison.Ordinal);
+        int complete = mainSection.IndexOf(
+            "RunInstallTransaction \"Complete\"",
+            StringComparison.Ordinal);
+        Assert.True(
+            commit >= 0 && enableStartup > commit && complete > enableStartup,
+            "Startup registration must be required after commit and before transaction cleanup.");
+
+        Assert.Contains("--enable-startup", helper, StringComparison.Ordinal);
+        Assert.Contains("--background", helper, StringComparison.Ordinal);
+        Assert.Contains(
+            "string startupCommand = \"\\\"\" + launcherPath + \"\\\" \" + BackgroundLaunchArgument;",
+            helper,
+            StringComparison.Ordinal);
+        Assert.Contains("Registry.CurrentUser.CreateSubKey", helper, StringComparison.Ordinal);
+        Assert.Contains("RegistryValueKind.String", helper, StringComparison.Ordinal);
+        Assert.DoesNotContain("preferences.json", mainSection, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("--cleanup-local-data", mainSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("--cleanup-credentials", mainSection, StringComparison.Ordinal);
+        Assert.DoesNotContain("LocalApplicationData", transaction, StringComparison.Ordinal);
+        Assert.DoesNotContain("preferences.json", transaction, StringComparison.OrdinalIgnoreCase);
+
+        int requestShutdown = mainSection.IndexOf(
+            "--request-shutdown-as-desktop-user",
+            StringComparison.Ordinal);
+        int forceStop = mainSection.IndexOf("Call StopSideyProcesses", StringComparison.Ordinal);
+        Assert.True(
+            requestShutdown >= 0 && forceStop > requestShutdown,
+            "Setup must request a settings-flushing shutdown before the bounded force-stop fallback.");
+        Assert.DoesNotContain(
+            "Goto ",
+            mainSection[requestShutdown..forceStop],
+            StringComparison.Ordinal);
+        Assert.Contains("--shutdown-for-update", helper, StringComparison.Ordinal);
+        Assert.Contains("WindowsStartupService.IsUpdateShutdown", app, StringComparison.Ordinal);
+        Assert.Contains("BeginShutdown();", app, StringComparison.Ordinal);
     }
 
     [Fact]

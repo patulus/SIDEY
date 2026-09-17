@@ -64,6 +64,7 @@ public sealed class AtomicPreferencesStoreTests
             TreeMovementPaused = true,
             StartAtLogin = true,
             Language = "ja-JP",
+            Theme = AppThemePreference.Dark,
             CachedNickname = "윈도우 테스트",
             CachedCharacterId = "pixel_penguin",
             ActiveRoomId = activeRoomId,

@@ -33,7 +33,7 @@ public sealed class AppCoordinator : IMainWindowCoordinator, IHistoryCoordinator
     private readonly IPreferencesStore _preferencesStore;
     private readonly ICredentialStore _credentialStore;
     private readonly RoomSessionLifetime _roomSession = new();
-    private readonly WindowsStartupService _startup = new();
+    private readonly IWindowsStartupService _startup;
     private readonly DiagnosticDataExporter _diagnosticDataExporter = new();
     private readonly IActivityMonitor _activityMonitor = new WindowsActivityMonitor();
     private readonly MessageLedger _messages = new();
@@ -68,10 +68,12 @@ public sealed class AppCoordinator : IMainWindowCoordinator, IHistoryCoordinator
 
     public AppCoordinator(
         IPreferencesStore? preferencesStore = null,
-        ICredentialStore? credentialStore = null)
+        ICredentialStore? credentialStore = null,
+        IWindowsStartupService? startupService = null)
     {
         _preferencesStore = preferencesStore ?? new AtomicPreferencesStore();
         _credentialStore = credentialStore ?? new WindowsCredentialStore();
+        _startup = startupService ?? new WindowsStartupService();
         _audio = new WindowsImpactAudio(StartupDiagnostics.NonFatal);
         _animations.Changed += OnAnimationsChanged;
 #if DEBUG
@@ -266,6 +268,7 @@ public sealed class AppCoordinator : IMainWindowCoordinator, IHistoryCoordinator
         _audio.SetEnabled(preferences.CharacterSoundEffectsEnabled);
         _audio.SetVolume(preferences.CharacterSoundEffectsVolume);
         bool startAtLogin = _startup.IsEnabled();
+        bool startupMirrorChanged = preferences.StartAtLogin != startAtLogin;
         if (startAtLogin)
         {
             _startup.UpgradeEnabledRegistration();
@@ -273,6 +276,17 @@ public sealed class AppCoordinator : IMainWindowCoordinator, IHistoryCoordinator
         preferences = preferences with { StartAtLogin = startAtLogin };
         SetState(_state with { Preferences = preferences });
         _cachedStateLoaded = true;
+        if (startupMirrorChanged)
+        {
+            try
+            {
+                await _preferencesStore.SaveAsync(preferences, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                StartupDiagnostics.NonFatal("startup-preference-mirror", exception);
+            }
+        }
     }
 
     private Task? _initializationTask;

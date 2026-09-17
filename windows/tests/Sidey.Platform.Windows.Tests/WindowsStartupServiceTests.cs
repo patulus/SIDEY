@@ -16,6 +16,20 @@ public sealed class WindowsStartupServiceTests
         Assert.Equal(expected, WindowsStartupService.IsBackgroundLaunch(arguments));
     }
 
+    [Theory]
+    [InlineData("--shutdown-for-update", true)]
+    [InlineData("  --shutdown-for-update  ", true)]
+    [InlineData("--SHUTDOWN-FOR-UPDATE", true)]
+    [InlineData("", false)]
+    [InlineData("--shutdown-for-update --extra", false)]
+    [InlineData(null, false)]
+    public void UpdateShutdownRequiresTheDedicatedInternalArgument(
+        string? arguments,
+        bool expected)
+    {
+        Assert.Equal(expected, WindowsStartupService.IsUpdateShutdown(arguments));
+    }
+
     [Fact]
     public void StructuredRuntimeResolvesThePublicLauncher()
     {

@@ -577,6 +577,12 @@ Section "SIDEY" MainSection
     Goto legacy_detection_failed
   ${EndIf}
 
+  ; Ask current versions to flush user settings and exit cleanly. The helper
+  ; allows older versions a bounded grace period before the force-stop below.
+  ClearErrors
+  ExecWait '"$StagingDirectory\Runtime\SIDEY.UninstallHelper.exe" --request-shutdown-as-desktop-user' $0
+  ; Failure here is non-fatal: the authoritative bounded force-stop follows.
+
   Call StopSideyProcesses
   ${If} $0 != 0
     StrCpy $1 $0
@@ -652,6 +658,26 @@ Section "SIDEY" MainSection
     StrCpy $InstallerErrorStage "COMMIT"
     StrCpy $InstallerErrorTarget "$(InstallerComponentRegistration)"
     StrCpy $InstallerErrorCommand "Sidey.InstallTransaction.exe --action Commit"
+    StrCpy $InstallerErrorSymbol "REGISTRATION_FAILED"
+    StrCpy $InstallerErrorMessage "$(RegistrationFailed)"
+    Goto registration_rollback_failed
+  ${EndIf}
+
+  ; Fresh installs, repairs, and updates all opt the installing desktop user
+  ; into background launch. The app mirrors this registry truth to preferences.
+  ClearErrors
+  ExecWait '"$INSTDIR\Runtime\SIDEY.UninstallHelper.exe" --enable-startup-as-desktop-user' $0
+  ${If} ${Errors}
+    StrCpy $0 5
+  ${EndIf}
+  ${If} $0 != 0
+    StrCpy $1 $0
+    Call ResetInstallerError
+    StrCpy $0 $1
+    StrCpy $InstallerErrorSource "REGISTRY"
+    StrCpy $InstallerErrorStage "REGISTER"
+    StrCpy $InstallerErrorTarget "$(InstallerComponentCurrentUserData)"
+    StrCpy $InstallerErrorCommand "SIDEY.UninstallHelper.exe --enable-startup-as-desktop-user"
     StrCpy $InstallerErrorSymbol "REGISTRATION_FAILED"
     StrCpy $InstallerErrorMessage "$(RegistrationFailed)"
     Goto registration_rollback_failed

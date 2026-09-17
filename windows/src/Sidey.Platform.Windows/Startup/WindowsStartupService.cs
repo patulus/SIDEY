@@ -2,11 +2,21 @@ using Microsoft.Win32;
 
 namespace Sidey.Platform.Windows.Startup;
 
-public sealed class WindowsStartupService
+public interface IWindowsStartupService
+{
+    public bool IsEnabled();
+
+    public void SetEnabled(bool enabled);
+
+    public void UpgradeEnabledRegistration();
+}
+
+public sealed class WindowsStartupService : IWindowsStartupService
 {
     private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string ValueName = "SIDEY";
     public const string BackgroundLaunchArgument = "--background";
+    public const string UpdateShutdownArgument = "--shutdown-for-update";
 
     public bool IsEnabled()
     {
@@ -55,9 +65,13 @@ public sealed class WindowsStartupService
     }
 
     public static bool IsBackgroundLaunch(string? arguments) =>
-        StringComparer.OrdinalIgnoreCase.Equals(
-            arguments?.Trim(),
-            BackgroundLaunchArgument);
+        IsDedicatedArgument(arguments, BackgroundLaunchArgument);
+
+    public static bool IsUpdateShutdown(string? arguments) =>
+        IsDedicatedArgument(arguments, UpdateShutdownArgument);
+
+    private static bool IsDedicatedArgument(string? arguments, string expected) =>
+        StringComparer.OrdinalIgnoreCase.Equals(arguments?.Trim(), expected);
 
     private static string StartupCommand() =>
         $"{QuotedExecutablePath()} {BackgroundLaunchArgument}";

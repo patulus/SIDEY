@@ -5,6 +5,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32;
 
 namespace Sidey.Uninstaller
@@ -23,6 +24,14 @@ namespace Sidey.Uninstaller
             "--cleanup-startup-as-desktop-user";
         private const string LaunchSideyAsDesktopUserArgument =
             "--launch-sidey-as-desktop-user";
+        private const string EnableStartupAsDesktopUserArgument =
+            "--enable-startup-as-desktop-user";
+        private const string EnableStartupArgument = "--enable-startup";
+        private const string RequestShutdownAsDesktopUserArgument =
+            "--request-shutdown-as-desktop-user";
+        private const string RequestShutdownArgument = "--request-shutdown";
+        private const string UpdateShutdownArgument = "--shutdown-for-update";
+        private const string BackgroundLaunchArgument = "--background";
         private const string LegacyMsiDetectArgument = "--detect-legacy-msi";
         private const string StopSideyProcessesArgument = "--stop-sidey-processes";
         private const string CredentialFilter = "SIDEY/*";
@@ -62,6 +71,22 @@ namespace Sidey.Uninstaller
                     StringComparison.OrdinalIgnoreCase))
             {
                 return LaunchSideyAsDesktopUser();
+            }
+            if (arguments.Length == 1
+                && string.Equals(
+                    arguments[0],
+                    EnableStartupAsDesktopUserArgument,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return RunThisHelperAsDesktopUser(EnableStartupArgument);
+            }
+            if (arguments.Length == 1
+                && string.Equals(
+                    arguments[0],
+                    RequestShutdownAsDesktopUserArgument,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return RunThisHelperAsDesktopUser(RequestShutdownArgument);
             }
             if (arguments.Length == 1
                 && string.Equals(
@@ -137,6 +162,30 @@ namespace Sidey.Uninstaller
             if (arguments.Length == 1
                 && string.Equals(
                     arguments[0],
+                    EnableStartupArgument,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!DesktopUserProcess.IsCurrentDesktopUser())
+                {
+                    return 5;
+                }
+                return EnableCurrentUserStartupRegistration();
+            }
+            if (arguments.Length == 1
+                && string.Equals(
+                    arguments[0],
+                    RequestShutdownArgument,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                if (!DesktopUserProcess.IsCurrentDesktopUser())
+                {
+                    return 5;
+                }
+                return RequestCurrentUserSideyShutdown();
+            }
+            if (arguments.Length == 1
+                && string.Equals(
+                    arguments[0],
                     LegacyMsiDetectArgument,
                     StringComparison.OrdinalIgnoreCase))
             {
@@ -196,18 +245,9 @@ namespace Sidey.Uninstaller
         {
             try
             {
-                string helperPath = Process.GetCurrentProcess().MainModule.FileName;
-                DirectoryInfo runtimeDirectory = Directory.GetParent(helperPath);
-                DirectoryInfo installDirectory = runtimeDirectory == null
-                    ? null
-                    : runtimeDirectory.Parent;
-                if (installDirectory == null)
-                {
-                    return 2;
-                }
-
-                string launcherPath = Path.Combine(installDirectory.FullName, "SIDEY.exe");
-                if (!File.Exists(launcherPath))
+                string installDirectory;
+                string launcherPath;
+                if (!TryGetDeploymentPaths(out installDirectory, out launcherPath))
                 {
                     return 2;
                 }
@@ -215,13 +255,135 @@ namespace Sidey.Uninstaller
                 return DesktopUserProcess.Start(
                     launcherPath,
                     string.Empty,
-                    installDirectory.FullName,
+                    installDirectory,
                     waitForExit: false);
             }
             catch (Exception exception)
             {
                 return GetDesktopUserRunnerErrorCode(exception);
             }
+        }
+
+        private static int EnableCurrentUserStartupRegistration()
+        {
+            try
+            {
+                string installDirectory;
+                string launcherPath;
+                if (!TryGetDeploymentPaths(out installDirectory, out launcherPath))
+                {
+                    return 2;
+                }
+
+                string startupCommand = "\"" + launcherPath + "\" " + BackgroundLaunchArgument;
+                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(
+                    StartupRegistryPath,
+                    writable: true))
+                {
+                    key.SetValue(StartupValueName, startupCommand, RegistryValueKind.String);
+                }
+                return 0;
+            }
+            catch
+            {
+                return 1;
+            }
+        }
+
+        private static int RequestCurrentUserSideyShutdown()
+        {
+            try
+            {
+                if (!IsSideyRunning())
+                {
+                    return 0;
+                }
+
+                string installDirectory;
+                string launcherPath;
+                if (!TryGetDeploymentPaths(out installDirectory, out launcherPath))
+                {
+                    return 2;
+                }
+
+                using (Process launcher = Process.Start(new ProcessStartInfo
+                {
+                    FileName = launcherPath,
+                    Arguments = UpdateShutdownArgument,
+                    WorkingDirectory = installDirectory,
+                    UseShellExecute = false,
+                }))
+                {
+                    if (launcher == null)
+                    {
+                        return HelperErrorProcessNotStarted;
+                    }
+                    launcher.WaitForExit(5000);
+                }
+
+                Stopwatch timeout = Stopwatch.StartNew();
+                while (timeout.Elapsed < TimeSpan.FromSeconds(5))
+                {
+                    if (!IsSideyRunning())
+                    {
+                        return 0;
+                    }
+                    Thread.Sleep(100);
+                }
+
+                // Older versions do not understand the private shutdown request.
+                // Setup follows this grace period with its existing bounded force-stop.
+                return 0;
+            }
+            catch (Exception exception)
+            {
+                return GetDesktopUserRunnerErrorCode(exception);
+            }
+        }
+
+        private static bool IsSideyRunning()
+        {
+            foreach (string processName in new[] { "SIDEY", "SIDEY.Host" })
+            {
+                Process[] processes = Process.GetProcessesByName(processName);
+                bool running = false;
+                foreach (Process process in processes)
+                {
+                    using (process)
+                    {
+                        if (!process.HasExited)
+                        {
+                            running = true;
+                        }
+                    }
+                }
+                if (running)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool TryGetDeploymentPaths(
+            out string installDirectory,
+            out string launcherPath)
+        {
+            string helperPath = Process.GetCurrentProcess().MainModule.FileName;
+            DirectoryInfo runtimeDirectory = Directory.GetParent(helperPath);
+            DirectoryInfo deploymentDirectory = runtimeDirectory == null
+                ? null
+                : runtimeDirectory.Parent;
+            if (deploymentDirectory == null)
+            {
+                installDirectory = null;
+                launcherPath = null;
+                return false;
+            }
+
+            installDirectory = deploymentDirectory.FullName;
+            launcherPath = Path.Combine(installDirectory, "SIDEY.exe");
+            return File.Exists(launcherPath);
         }
 
         private static int RunThisHelperAsDesktopUser(string argument)
