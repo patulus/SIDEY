@@ -528,11 +528,14 @@ public sealed class NativePixelWorldSession : IOverlayHost, IDisposable
         try
         {
             DispatchPendingRightClick();
-            _renderer.SetEdgeInset(WindowsTaskbarService.VisibleInset(
+            WindowsTaskbarPresentation taskbar = WindowsTaskbarService.VisiblePresentation(
                 _monitor.MonitorPixels,
                 _monitor.MonitorPixels,
-                _edge));
-            nint shellSurface = WindowsShellSurfaceDetector.ForegroundSurface();
+                _edge);
+            _renderer.SetEdgeInset(taskbar.EdgeInset);
+            nint shellSurface = taskbar.RevealedAutoHideWindow != nint.Zero
+                ? taskbar.RevealedAutoHideWindow
+                : WindowsShellSurfaceDetector.ForegroundSurface();
             if (IsVisible && shellSurface != nint.Zero)
             {
                 if (shellSurface != _yieldedShellSurface

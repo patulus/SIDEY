@@ -3,6 +3,14 @@ using Sidey.Core.Domain;
 
 namespace Sidey.Platform.Windows.Shell;
 
+public readonly record struct WindowsTaskbarPresentation(
+    int EdgeInset,
+    nint RevealedAutoHideWindow);
+
+internal readonly record struct WindowsTaskbarWindow(
+    nint Handle,
+    NativePixelRect Bounds);
+
 public static class WindowsTaskbarService
 {
     private const int MinimumShownThickness = 8;
@@ -12,7 +20,26 @@ public static class WindowsTaskbarService
         NativePixelRect monitorBounds,
         NativePixelRect workAreaBounds,
         OverlayEdge edge) =>
-        AdditionalInset(monitorBounds, workAreaBounds, edge, GetVisibleTaskbarBounds());
+        VisiblePresentation(monitorBounds, workAreaBounds, edge).EdgeInset;
+
+    public static WindowsTaskbarPresentation VisiblePresentation(
+        NativePixelRect monitorBounds,
+        NativePixelRect workAreaBounds,
+        OverlayEdge edge)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return default;
+        }
+
+        IReadOnlyList<nint> autoHideWindows = GetAutoHideWindows(monitorBounds);
+        return Presentation(
+            monitorBounds,
+            workAreaBounds,
+            edge,
+            GetVisibleTaskbarWindows(autoHideWindows),
+            autoHideWindows);
+    }
 
     public static int AdditionalInset(
         NativePixelRect monitorBounds,
@@ -20,58 +47,117 @@ public static class WindowsTaskbarService
         OverlayEdge edge,
         IReadOnlyList<NativePixelRect> taskbarBounds)
     {
+        var taskbars = new WindowsTaskbarWindow[taskbarBounds.Count];
+        for (int index = 0; index < taskbarBounds.Count; index++)
+        {
+            taskbars[index] = new WindowsTaskbarWindow(nint.Zero, taskbarBounds[index]);
+        }
+        return Presentation(
+            monitorBounds,
+            workAreaBounds,
+            edge,
+            taskbars,
+            autoHideWindows: []).EdgeInset;
+    }
+
+    internal static WindowsTaskbarPresentation Presentation(
+        NativePixelRect monitorBounds,
+        NativePixelRect workAreaBounds,
+        OverlayEdge edge,
+        IReadOnlyList<WindowsTaskbarWindow> taskbars,
+        IReadOnlyList<nint> autoHideWindows)
+    {
         if (!monitorBounds.IsValid || !workAreaBounds.IsValid)
         {
             throw new ArgumentOutOfRangeException(nameof(monitorBounds));
         }
 
         int inset = 0;
-        foreach (NativePixelRect taskbar in taskbarBounds)
+        nint revealedAutoHideWindow = nint.Zero;
+        foreach (WindowsTaskbarWindow taskbar in taskbars)
         {
-            if (!TryIntersect(monitorBounds, taskbar, out NativePixelRect visible))
+            int candidate = Inset(
+                monitorBounds,
+                workAreaBounds,
+                edge,
+                taskbar.Bounds);
+            inset = Math.Max(inset, candidate);
+            if (revealedAutoHideWindow == nint.Zero
+                && Contains(autoHideWindows, taskbar.Handle)
+                && IsShownTaskbar(monitorBounds, taskbar.Bounds))
             {
-                continue;
+                revealedAutoHideWindow = taskbar.Handle;
             }
-
-            int candidate = edge switch
-            {
-                OverlayEdge.Bottom
-                    when Touches(visible.Y + visible.Height, monitorBounds.Y + monitorBounds.Height)
-                         && IsHorizontal(visible)
-                         && visible.Height >= MinimumShownThickness =>
-                    workAreaBounds.Y + workAreaBounds.Height - visible.Y,
-                OverlayEdge.Top
-                    when Touches(visible.Y, monitorBounds.Y)
-                         && IsHorizontal(visible)
-                         && visible.Height >= MinimumShownThickness =>
-                    visible.Y + visible.Height - workAreaBounds.Y,
-                OverlayEdge.Left
-                    when Touches(visible.X, monitorBounds.X)
-                         && IsVertical(visible)
-                         && visible.Width >= MinimumShownThickness =>
-                    visible.X + visible.Width - workAreaBounds.X,
-                OverlayEdge.Right
-                    when Touches(visible.X + visible.Width, monitorBounds.X + monitorBounds.Width)
-                         && IsVertical(visible)
-                         && visible.Width >= MinimumShownThickness =>
-                    workAreaBounds.X + workAreaBounds.Width - visible.X,
-                _ => 0,
-            };
-            inset = Math.Max(inset, Math.Max(0, candidate));
         }
-
-        return inset;
+        return new WindowsTaskbarPresentation(inset, revealedAutoHideWindow);
     }
 
-    private static IReadOnlyList<NativePixelRect> GetVisibleTaskbarBounds()
+    private static int Inset(
+        NativePixelRect monitorBounds,
+        NativePixelRect workAreaBounds,
+        OverlayEdge edge,
+        NativePixelRect taskbar)
     {
-        if (!OperatingSystem.IsWindows())
+        if (!TryIntersect(monitorBounds, taskbar, out NativePixelRect visible))
         {
-            return [];
+            return 0;
         }
 
-        var bounds = new List<NativePixelRect>();
-        AddVisibleBounds(NativeMethods.FindWindow("Shell_TrayWnd", null), bounds);
+        int candidate = edge switch
+        {
+            OverlayEdge.Bottom
+                when Touches(visible.Y + visible.Height, monitorBounds.Y + monitorBounds.Height)
+                     && IsHorizontal(visible)
+                     && visible.Height >= MinimumShownThickness =>
+                workAreaBounds.Y + workAreaBounds.Height - visible.Y,
+            OverlayEdge.Top
+                when Touches(visible.Y, monitorBounds.Y)
+                     && IsHorizontal(visible)
+                     && visible.Height >= MinimumShownThickness =>
+                visible.Y + visible.Height - workAreaBounds.Y,
+            OverlayEdge.Left
+                when Touches(visible.X, monitorBounds.X)
+                     && IsVertical(visible)
+                     && visible.Width >= MinimumShownThickness =>
+                visible.X + visible.Width - workAreaBounds.X,
+            OverlayEdge.Right
+                when Touches(visible.X + visible.Width, monitorBounds.X + monitorBounds.Width)
+                     && IsVertical(visible)
+                     && visible.Width >= MinimumShownThickness =>
+                workAreaBounds.X + workAreaBounds.Width - visible.X,
+            _ => 0,
+        };
+        return Math.Max(0, candidate);
+    }
+
+    private static bool IsShownTaskbar(
+        NativePixelRect monitorBounds,
+        NativePixelRect taskbar)
+    {
+        if (!TryIntersect(monitorBounds, taskbar, out NativePixelRect visible))
+        {
+            return false;
+        }
+
+        return IsHorizontal(visible)
+            ? visible.Height >= MinimumShownThickness
+                && (Touches(visible.Y, monitorBounds.Y)
+                    || Touches(
+                        visible.Y + visible.Height,
+                        monitorBounds.Y + monitorBounds.Height))
+            : IsVertical(visible)
+                && visible.Width >= MinimumShownThickness
+                && (Touches(visible.X, monitorBounds.X)
+                    || Touches(
+                        visible.X + visible.Width,
+                        monitorBounds.X + monitorBounds.Width));
+    }
+
+    private static IReadOnlyList<WindowsTaskbarWindow> GetVisibleTaskbarWindows(
+        IReadOnlyList<nint> autoHideWindows)
+    {
+        var taskbars = new List<WindowsTaskbarWindow>();
+        AddVisibleTaskbar(NativeMethods.FindWindow("Shell_TrayWnd", null), taskbars);
 
         nint previous = nint.Zero;
         while (true)
@@ -86,16 +172,33 @@ public static class WindowsTaskbarService
                 break;
             }
 
-            AddVisibleBounds(taskbar, bounds);
+            AddVisibleTaskbar(taskbar, taskbars);
             previous = taskbar;
         }
-        return bounds;
+        foreach (nint autoHideWindow in autoHideWindows)
+        {
+            AddVisibleTaskbar(autoHideWindow, taskbars);
+        }
+        return taskbars;
     }
 
-    private static void AddVisibleBounds(nint window, ICollection<NativePixelRect> bounds)
+    private static void AddVisibleTaskbar(
+        nint window,
+        List<WindowsTaskbarWindow> taskbars)
     {
-        if (window == nint.Zero
-            || !NativeMethods.IsWindowVisible(window)
+        if (window == nint.Zero)
+        {
+            return;
+        }
+        for (int index = 0; index < taskbars.Count; index++)
+        {
+            if (taskbars[index].Handle == window)
+            {
+                return;
+            }
+        }
+
+        if (!NativeMethods.IsWindowVisible(window)
             || !NativeMethods.GetWindowRect(window, out NativeRect rectangle))
         {
             return;
@@ -105,8 +208,51 @@ public static class WindowsTaskbarService
         int height = rectangle.Bottom - rectangle.Top;
         if (width > 0 && height > 0)
         {
-            bounds.Add(new NativePixelRect(rectangle.Left, rectangle.Top, width, height));
+            taskbars.Add(new WindowsTaskbarWindow(
+                window,
+                new NativePixelRect(rectangle.Left, rectangle.Top, width, height)));
         }
+    }
+
+    private static IReadOnlyList<nint> GetAutoHideWindows(NativePixelRect monitorBounds)
+    {
+        const uint AbmGetAutoHideBarEx = 0x0000000B;
+        var windows = new List<nint>(capacity: 4);
+        for (uint edge = 0; edge < 4; edge++)
+        {
+            var data = new NativeMethods.AppBarData
+            {
+                _size = (uint)Marshal.SizeOf<NativeMethods.AppBarData>(),
+                _edge = edge,
+                _bounds = new NativeRect
+                {
+                    Left = monitorBounds.X,
+                    Top = monitorBounds.Y,
+                    Right = monitorBounds.X + monitorBounds.Width,
+                    Bottom = monitorBounds.Y + monitorBounds.Height,
+                },
+            };
+            nint window = unchecked((nint)NativeMethods.SHAppBarMessage(
+                AbmGetAutoHideBarEx,
+                ref data));
+            if (window != nint.Zero && !Contains(windows, window))
+            {
+                windows.Add(window);
+            }
+        }
+        return windows;
+    }
+
+    private static bool Contains(IReadOnlyList<nint> windows, nint window)
+    {
+        for (int index = 0; index < windows.Count; index++)
+        {
+            if (windows[index] == window)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static bool TryIntersect(
@@ -140,6 +286,20 @@ public static class WindowsTaskbarService
 
     private static class NativeMethods
     {
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct AppBarData
+        {
+            internal uint _size;
+            internal nint _window;
+            internal uint _callbackMessage;
+            internal uint _edge;
+            internal NativeRect _bounds;
+            internal nint _parameter;
+        }
+
+        [DllImport("shell32.dll")]
+        internal static extern nuint SHAppBarMessage(uint message, ref AppBarData data);
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool IsWindowVisible(nint window);
