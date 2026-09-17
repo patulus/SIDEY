@@ -32,7 +32,11 @@ public sealed class WindowsShellSurfacePolicyTests
                 taskbar,
                 "Shell_SecondaryTrayWnd",
                 popupStyle,
-                toolWindowStyle)],
+                toolWindowStyle,
+                IsVisible: true,
+                IsCloaked: false,
+                Width: 1920,
+                Height: 48)],
             fullscreenWindow,
             foregroundShouldYield: false);
 
@@ -44,11 +48,121 @@ public sealed class WindowsShellSurfacePolicyTests
     {
         nint popup = 101;
         WindowsShellSurfaceResolver resolver = Resolver(
-            [new FakeWindow(popup, "#32768", nint.Zero, nint.Zero)],
+            [new FakeWindow(
+                popup,
+                "#32768",
+                nint.Zero,
+                nint.Zero,
+                IsVisible: true,
+                IsCloaked: false,
+                Width: 320,
+                Height: 240)],
             foreground: 202,
             foregroundShouldYield: false);
 
         Assert.Equal(popup, resolver.ForegroundSurface());
+    }
+
+    [Fact]
+    public void ApplicationTransientPopupsDoNotLowerOverlay()
+    {
+        nint popupStyle = new(unchecked((long)0x80000000));
+        nint toolWindowStyle = new(0x80);
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [
+                new FakeWindow(
+                    Handle: 101,
+                    "#32768",
+                    nint.Zero,
+                    nint.Zero,
+                    IsVisible: true,
+                    IsCloaked: false,
+                    Width: 320,
+                    Height: 240,
+                    ProcessName: "msedge"),
+                new FakeWindow(
+                    Handle: 102,
+                    "Chrome_WidgetWin_1",
+                    popupStyle,
+                    toolWindowStyle,
+                    IsVisible: true,
+                    IsCloaked: false,
+                    Width: 640,
+                    Height: 480,
+                    ProcessName: "msedge"),
+            ],
+            foreground: 202,
+            foregroundShouldYield: false);
+
+        Assert.Equal(nint.Zero, resolver.ForegroundSurface());
+    }
+
+    [Fact]
+    public void VisibleWidgetRemainsAboveOverlayAfterForegroundChanges()
+    {
+        nint popupStyle = new(unchecked((long)0x80000000));
+        nint toolWindowStyle = new(0x80);
+        nint widget = 101;
+        nint normalForeground = 202;
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [
+                new FakeWindow(
+                    Handle: 100,
+                    "ThumbnailDeviceHelperWnd",
+                    popupStyle,
+                    toolWindowStyle,
+                    IsVisible: true,
+                    IsCloaked: true,
+                    Width: 1,
+                    Height: 1),
+                new FakeWindow(
+                    widget,
+                    "WindowsDashboard",
+                    popupStyle,
+                    toolWindowStyle,
+                    IsVisible: true,
+                    IsCloaked: false,
+                    Width: 1084,
+                    Height: 1736),
+            ],
+            foreground: normalForeground,
+            foregroundShouldYield: false);
+
+        Assert.Equal(widget, resolver.ForegroundSurface());
+        Assert.Equal(widget, resolver.ForegroundSurface());
+    }
+
+    [Fact]
+    public void VisibleTrayOverflowYieldsWithoutTakingForeground()
+    {
+        nint popupStyle = new(unchecked((long)0x80000000));
+        nint toolWindowStyle = new(0x80);
+        nint trayOverflow = 101;
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [
+                new FakeWindow(
+                    Handle: 100,
+                    "PseudoConsoleWindow",
+                    popupStyle,
+                    toolWindowStyle,
+                    IsVisible: true,
+                    IsCloaked: false,
+                    Width: 0,
+                    Height: 0),
+                new FakeWindow(
+                    trayOverflow,
+                    "TopLevelWindowForOverflowXamlIsland",
+                    popupStyle,
+                    toolWindowStyle,
+                    IsVisible: true,
+                    IsCloaked: false,
+                    Width: 480,
+                    Height: 640),
+            ],
+            foreground: 202,
+            foregroundShouldYield: false);
+
+        Assert.Equal(trayOverflow, resolver.ForegroundSurface());
     }
 
     [Fact]
@@ -61,6 +175,38 @@ public sealed class WindowsShellSurfacePolicyTests
             foregroundShouldYield: true);
 
         Assert.Equal(foreground, resolver.ForegroundSurface());
+    }
+
+    [Theory]
+    [InlineData("ThumbnailDeviceHelperWnd", true, 1, 1)]
+    [InlineData("PseudoConsoleWindow", false, 0, 0)]
+    [InlineData("XamlExplorerHostIslandWindow_WASDK", false, 0, 0)]
+    public void CloakedOrEmptyPopupWindowsDoNotOverrideNormalForeground(
+        string windowClass,
+        bool isCloaked,
+        int width,
+        int height)
+    {
+        nint popupStyle = new(unchecked((long)0x80000000));
+        nint toolWindowStyle = new(0x80);
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [new FakeWindow(
+                Handle: 101,
+                windowClass,
+                popupStyle,
+                toolWindowStyle,
+                IsVisible: true,
+                isCloaked,
+                width,
+                height)],
+            foreground: 202,
+            foregroundShouldYield: false);
+
+        Assert.True(WindowsShellSurfacePolicy.IsTransientPopup(
+            windowClass,
+            popupStyle,
+            toolWindowStyle));
+        Assert.Equal(nint.Zero, resolver.ForegroundSurface());
     }
 
     [Theory]
@@ -127,11 +273,20 @@ public sealed class WindowsShellSurfacePolicyTests
         nint foreground,
         bool foregroundShouldYield) =>
         new(
-            shouldYield =>
+            () =>
             {
                 foreach (FakeWindow window in visibleWindows)
                 {
-                    if (shouldYield(window.ClassName, window.Style, window.ExtendedStyle))
+                    if (WindowsShellSurfacePolicy.CanCoverOverlay(
+                            window.IsVisible,
+                            window.IsCloaked,
+                            window.Width,
+                            window.Height)
+                        && WindowsShellSurfacePolicy.ShouldYieldTransientSurface(
+                            window.ProcessName,
+                            window.ClassName,
+                            window.Style,
+                            window.ExtendedStyle))
                     {
                         return window.Handle;
                     }
@@ -150,5 +305,10 @@ public sealed class WindowsShellSurfacePolicyTests
         nint Handle,
         string ClassName,
         nint Style,
-        nint ExtendedStyle);
+        nint ExtendedStyle,
+        bool IsVisible,
+        bool IsCloaked,
+        int Width,
+        int Height,
+        string ProcessName = "explorer");
 }
