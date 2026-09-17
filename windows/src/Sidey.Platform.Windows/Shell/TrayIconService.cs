@@ -11,6 +11,7 @@ internal enum TrayUpdateNotification
     Available = 1,
     Latest = 2,
     Failed = 3,
+    Installed = 4,
 }
 
 public enum TrayCommand
@@ -25,6 +26,7 @@ public enum TrayCommand
     CheckUpdates = 1007,
     Settings = 1008,
     Store = 1009,
+    ReleaseNotes = 1010,
     Exit = 1099,
 }
 
@@ -69,6 +71,8 @@ public sealed class TrayIconService : IDisposable
     private bool _ownsBaseIcon;
     private bool _ownsUnreadIcon;
     private string _availableUpdateVersion = string.Empty;
+    private string _installedUpdateVersion = string.Empty;
+    private TrayCommand _notificationClickCommand = TrayCommand.Open;
     private Exception? _startupError;
     private TrayMenuState _state = new(true, false, false, 0, [], null);
     private bool _disposed;
@@ -141,6 +145,13 @@ public sealed class TrayIconService : IDisposable
         PostUpdateNotification(TrayUpdateNotification.Failed);
     }
 
+    public void NotifyUpdateInstalled(string version)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(version);
+        _installedUpdateVersion = version;
+        PostUpdateNotification(TrayUpdateNotification.Installed);
+    }
+
     private void PostUpdateNotification(TrayUpdateNotification notification)
     {
         if (_window != nint.Zero)
@@ -162,8 +173,16 @@ public sealed class TrayIconService : IDisposable
                 availableVersion),
             TrayUpdateNotification.Latest => I18n.Get("tray.updateLatest"),
             TrayUpdateNotification.Failed => I18n.Get("tray.updateCheckFailed"),
+            TrayUpdateNotification.Installed => I18n.Format(
+                "tray.updateInstalled",
+                availableVersion),
             _ => throw new ArgumentOutOfRangeException(nameof(notification)),
         };
+
+    internal static TrayCommand NotificationClickCommand(TrayUpdateNotification notification) =>
+        notification == TrayUpdateNotification.Installed
+            ? TrayCommand.ReleaseNotes
+            : TrayCommand.Open;
 
     public void Dispose()
     {
@@ -613,7 +632,14 @@ public sealed class TrayIconService : IDisposable
                     service.ShowMenu();
                     return nint.Zero;
                 }
-                if (mouseMessage is 0x0202 or 0x0203 or 0x0405)
+                if (mouseMessage == 0x0405)
+                {
+                    TrayCommand command = service._notificationClickCommand;
+                    service._notificationClickCommand = TrayCommand.Open;
+                    service.CommandInvoked?.Invoke(command);
+                    return nint.Zero;
+                }
+                if (mouseMessage is 0x0202 or 0x0203)
                 {
                     service.CommandInvoked?.Invoke(TrayCommand.Open);
                     return nint.Zero;
@@ -639,19 +665,24 @@ public sealed class TrayIconService : IDisposable
                         (TrayUpdateNotification)(nuint)wParam;
                     if (notification is not TrayUpdateNotification.Available
                         and not TrayUpdateNotification.Latest
-                        and not TrayUpdateNotification.Failed)
+                        and not TrayUpdateNotification.Failed
+                        and not TrayUpdateNotification.Installed)
                     {
                         return NativeMethods.DefWindowProc(window, message, wParam, lParam);
                     }
 
+                    service._notificationClickCommand = NotificationClickCommand(notification);
                     data.InfoTitle = "SIDEY";
                     data.Info = UpdateNotificationBody(
                         notification,
-                        service._availableUpdateVersion);
+                        notification == TrayUpdateNotification.Installed
+                            ? service._installedUpdateVersion
+                            : service._availableUpdateVersion);
                     data.InfoFlags = NotifyInfoInfo;
                 }
                 else
                 {
+                    service._notificationClickCommand = TrayCommand.Open;
                     data.InfoTitle = I18n.Get("tray.connectionFailedTitle");
                     data.Info = I18n.Get("tray.connectionFailedBody");
                     data.InfoFlags = NotifyInfoWarning;

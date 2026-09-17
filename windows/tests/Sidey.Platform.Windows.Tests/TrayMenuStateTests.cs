@@ -46,7 +46,11 @@ public sealed class TrayMenuStateTests
         (int)TrayUpdateNotification.Failed,
         "",
         "업데이트 확인에 실패했습니다. 잠시 후 다시 시도해 주세요.")]
-    public void UpdateNotificationsDescribeTheCompletedCheck(
+    [InlineData(
+        (int)TrayUpdateNotification.Installed,
+        "1.3.2",
+        "SIDEY 1.3.2 업데이트를 완료했습니다. 클릭해 변경 내용을 확인하세요.")]
+    public void UpdateNotificationsUseTheLocalizedBody(
         int notification,
         string version,
         string expected)
@@ -54,5 +58,19 @@ public sealed class TrayMenuStateTests
         Assert.Equal(
             expected,
             TrayIconService.UpdateNotificationBody((TrayUpdateNotification)notification, version));
+    }
+
+    [Theory]
+    [InlineData((int)TrayUpdateNotification.Available, TrayCommand.Open)]
+    [InlineData((int)TrayUpdateNotification.Latest, TrayCommand.Open)]
+    [InlineData((int)TrayUpdateNotification.Failed, TrayCommand.Open)]
+    [InlineData((int)TrayUpdateNotification.Installed, TrayCommand.ReleaseNotes)]
+    public void CompletedUpdateNotificationOpensReleaseNotes(
+        int notification,
+        TrayCommand expected)
+    {
+        Assert.Equal(
+            expected,
+            TrayIconService.NotificationClickCommand((TrayUpdateNotification)notification));
     }
 }

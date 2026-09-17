@@ -1388,7 +1388,7 @@ public sealed class MainWindowViewModelTests
     }
 
     [Fact]
-    public async Task StartupUpdateCheckOnlyNotifiesWhenAnUpdateExists()
+    public async Task StartupUpdateCheckReturnsAvailableUpdateWithoutAnInAppNotice()
     {
         (FakeSideyCoordinator coordinator, _) = CreateRoomState();
         var updates = new FakeUpdateService
@@ -1399,14 +1399,13 @@ public sealed class MainWindowViewModelTests
             coordinator,
             new FakeMainWindowDialogService(),
             updates);
-        NoticeMessage? notice = null;
-        viewModel.NoticeRaised += value => notice = value;
+        int noticeCount = 0;
+        viewModel.NoticeRaised += _ => noticeCount++;
 
-        await viewModel.CheckForUpdatesOnStartupAsync();
+        AvailableUpdate? update = await viewModel.CheckForUpdatesOnStartupAsync();
 
-        Assert.NotNull(notice);
-        Assert.Equal(NoticeKind.Informational, notice.Kind);
-        Assert.Contains("0.3.0-alpha.3", notice.Message, StringComparison.Ordinal);
+        Assert.Equal("0.3.0-alpha.3", update?.Version);
+        Assert.Equal(0, noticeCount);
         Assert.Equal(0, updates.InstallerLaunchCount);
     }
 

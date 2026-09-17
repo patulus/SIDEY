@@ -371,7 +371,7 @@
     "activeRoomRequired": "활성 그룹과 프로필이 필요합니다."
   },
   "tray": {
-    "open": "열기", "hideOverlay": "오버레이 숨기기", "showOverlay": "오버레이 보이기", "compose": "메시지 작성…", "noGroups": "연결된 그룹 없음", "activeGroup": "활성 그룹", "quietMode": "조용히 모드", "history": "최근 기록…", "store": "상점…", "groups": "그룹 설정…", "startup": "로그인 시 자동 실행", "checkUpdates": "업데이트 확인…", "settings": "설정…", "exit": "종료", "unreadTooltip": "SIDEY · 미확인 메시지 {0}개", "connectionFailedTitle": "SIDEY 연결 안 됨", "connectionFailedBody": "연결 상태에서 재연결을 눌러 주세요. 그래도 연결되지 않으면 진단 로그를 첨부해 문의해 주세요.", "updateLatest": "최신 버전입니다.", "updateAvailable": "업데이트가 있습니다. {0}", "updateCheckFailed": "업데이트 확인에 실패했습니다. 잠시 후 다시 시도해 주세요."
+    "open": "열기", "hideOverlay": "오버레이 숨기기", "showOverlay": "오버레이 보이기", "compose": "메시지 작성…", "noGroups": "연결된 그룹 없음", "activeGroup": "활성 그룹", "quietMode": "조용히 모드", "history": "최근 기록…", "store": "상점…", "groups": "그룹 설정…", "startup": "로그인 시 자동 실행", "checkUpdates": "업데이트 확인…", "settings": "설정…", "exit": "종료", "unreadTooltip": "SIDEY · 미확인 메시지 {0}개", "connectionFailedTitle": "SIDEY 연결 안 됨", "connectionFailedBody": "연결 상태에서 재연결을 눌러 주세요. 그래도 연결되지 않으면 진단 로그를 첨부해 문의해 주세요.", "updateLatest": "최신 버전입니다.", "updateAvailable": "업데이트가 있습니다. {0}", "updateInstalled": "SIDEY {0} 업데이트를 완료했습니다. 클릭해 변경 내용을 확인하세요.", "updateCheckFailed": "업데이트 확인에 실패했습니다. 잠시 후 다시 시도해 주세요."
   },
   "history": {
     "retentionNotice": "메시지는 서버에서 3일 후 자동 삭제됩니다.",

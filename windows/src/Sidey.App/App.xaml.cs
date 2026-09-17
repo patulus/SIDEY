@@ -19,6 +19,7 @@ public partial class App : Application
 
     private readonly DispatcherQueue _dispatcherQueue;
     private readonly WindowsUpdateServiceAdapter _updateService;
+    private readonly WindowsUpdateCompletionTracker _updateCompletionTracker;
     private Window? _window;
     private MainWindow? _mainWindow;
     private OnboardingWindow? _onboardingWindow;
@@ -45,6 +46,7 @@ public partial class App : Application
     {
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         _updateService = new WindowsUpdateServiceAdapter();
+        _updateCompletionTracker = new WindowsUpdateCompletionTracker();
         StartupDiagnostics.BeginSession();
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
@@ -147,6 +149,9 @@ public partial class App : Application
         StartupDiagnostics.Stage(
             $"language-initialized language={I18n.Language} "
             + $"saved={(coordinator.State.Preferences.Language is not null).ToString().ToLowerInvariant()}");
+        string? completedUpdateVersion = _updateCompletionTracker.PendingNotificationVersion(
+            coordinator.State.Preferences.OnboardingCompleted,
+            _updateService.CurrentVersion);
         coordinator.ComposerRequested += RequestComposer;
         coordinator.PulseRequested += RequestPulse;
         coordinator.TreeMovementToggleRequested += RequestTreeMovementToggle;
@@ -207,6 +212,11 @@ public partial class App : Application
             _tray.DisplayTopologyChanged += OnDisplayTopologyChanged;
             _mainWindow?.SetTrayAvailable(true);
             StartupDiagnostics.Stage("tray-started");
+            if (completedUpdateVersion is not null)
+            {
+                _tray.NotifyUpdateInstalled(completedUpdateVersion);
+                StartupDiagnostics.Stage("update-completed-notification-posted");
+            }
             if (_pendingUpdateNotificationVersion is { } pendingVersion)
             {
                 PostUpdateNotification(pendingVersion);
@@ -218,6 +228,11 @@ public partial class App : Application
             EnsureMainWindow().ShowFatalError(new InvalidOperationException(
                 I18n.Get("error.trayStart"),
                 exception));
+        }
+        if (completedUpdateVersion is null || _tray is not null)
+        {
+            StartupDiagnostics.Stage(
+                $"update-completion-state-saved result={_updateCompletionTracker.TryMarkLaunched(_updateService.CurrentVersion).ToString().ToLowerInvariant()}");
         }
 #if DEBUG
         _developmentUpdate = DevelopmentUpdateService.Start(OnDevelopmentUpdateAccepted);
@@ -1163,9 +1178,28 @@ public partial class App : Application
             case TrayCommand.Store:
                 EnsureMainWindow().ShowPage("store");
                 break;
+            case TrayCommand.ReleaseNotes:
+                _ = OpenCurrentReleaseNotesFromTrayAsync();
+                break;
             case TrayCommand.Exit:
                 BeginShutdown();
                 break;
+        }
+    }
+
+    private async Task OpenCurrentReleaseNotesFromTrayAsync()
+    {
+        try
+        {
+            await _updateService.OpenReleaseNotesAsync(_updateService.CurrentReleaseNotesUri);
+        }
+        catch (Exception exception)
+        {
+            MainWindow mainWindow = EnsureMainWindow();
+            mainWindow.ShowPage("about");
+            mainWindow.ViewModel.ReportError(new InvalidOperationException(
+                I18n.Format("update.releaseNotesFailed", exception.Message),
+                exception));
         }
     }
 

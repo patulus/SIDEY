@@ -655,12 +655,6 @@ public sealed partial class MainWindowViewModel : ObservableObject
         {
             AvailableUpdate? update = await _updates.CheckAsync();
             _lastAvailableUpdate = update;
-            if (update is not null)
-            {
-                RaiseNotice(
-                    I18n.Format("update.startupAvailable", update.Version),
-                    NoticeKind.Informational);
-            }
             return update;
         }
         finally
