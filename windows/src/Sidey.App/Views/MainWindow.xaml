@@ -1099,18 +1099,6 @@
               <Border Style="{StaticResource SideySettingsCardStyle}">
                 <Grid ColumnSpacing="16">
                   <Grid.ColumnDefinitions><ColumnDefinition Width="32" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                  <FontIcon FontSize="22" Glyph="&#xE939;" VerticalAlignment="Center" />
-                  <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-                    <TextBlock FontWeight="SemiBold" Text="{Binding Value, Source={i18n:I18n Key=about.feedbackTitle}, Mode=OneWay}" />
-                    <TextBlock Foreground="{ThemeResource TextFillColorSecondaryBrush}" Text="{Binding Value, Source={i18n:I18n Key=about.feedbackDescription}, Mode=OneWay}" TextWrapping="Wrap" />
-                  </StackPanel>
-                  <Button Grid.Column="2" VerticalAlignment="Center" Command="{Binding OpenExternalLinkCommand}" CommandParameter="https://github.com/sidey-app/SIDEY/issues/new/choose" Content="{Binding Value, Source={i18n:I18n Key=about.sendFeedback}, Mode=OneWay}" />
-                </Grid>
-              </Border>
-
-              <Border Style="{StaticResource SideySettingsCardStyle}">
-                <Grid ColumnSpacing="16">
-                  <Grid.ColumnDefinitions><ColumnDefinition Width="32" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                   <FontIcon FontSize="22" Glyph="&#xE90F;" VerticalAlignment="Center" />
                   <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
                     <TextBlock FontWeight="SemiBold" Text="{Binding Value, Source={i18n:I18n Key=about.diagnosticsTitle}, Mode=OneWay}" />
