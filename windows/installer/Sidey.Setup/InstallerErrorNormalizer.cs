@@ -3,10 +3,12 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Net;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Win32.SafeHandles;
 
 namespace Sidey.Setup.Errors
 {
@@ -39,6 +41,13 @@ namespace Sidey.Setup.Errors
                         commandLine.OptionalValue("--message"),
                         installerVersion);
                     ResultWriter.Write(normalized, resultPath, logPath);
+                    return 0;
+                }
+
+                if (commandLine.HasFlag("--remove-installer-logs"))
+                {
+                    commandLine.AssertOnlyModeFlags("--remove-installer-logs");
+                    InstallerLogCleanup.DeleteMachineLogsIfSafe();
                     return 0;
                 }
 
@@ -87,6 +96,7 @@ namespace Sidey.Setup.Errors
             new[]
             {
                 "--normalize-error",
+                "--remove-installer-logs",
             },
             StringComparer.OrdinalIgnoreCase);
 
@@ -187,6 +197,315 @@ namespace Sidey.Setup.Errors
                 }
             }
         }
+    }
+
+    internal static class InstallerLogCleanup
+    {
+        private const uint DeleteAccess = 0x00010000;
+        private const uint FileListDirectory = 0x00000001;
+        private const uint FileReadAttributes = 0x00000080;
+        private const uint FileShareRead = 0x00000001;
+        private const uint FileShareWrite = 0x00000002;
+        private const uint OpenExisting = 3;
+        private const uint FileAttributeDirectory = 0x00000010;
+        private const uint FileAttributeReparsePoint = 0x00000400;
+        private const uint FileFlagOpenReparsePoint = 0x00200000;
+        private const uint FileFlagBackupSemantics = 0x02000000;
+        private const uint FileNameNormalized = 0;
+
+        private static readonly Regex LogFileName = new Regex(
+            "^SIDEY-(?:Setup|Uninstall)-[0-9]{8}-[0-9]{6}\\.log$",
+            RegexOptions.CultureInvariant);
+
+        internal static void DeleteMachineLogsIfSafe()
+        {
+            string commonApplicationData = Environment.GetFolderPath(
+                Environment.SpecialFolder.CommonApplicationData);
+            if (string.IsNullOrWhiteSpace(commonApplicationData))
+            {
+                throw new InvalidOperationException(
+                    "The machine-wide application data directory is unavailable.");
+            }
+            string expectedPath = Path.Combine(
+                commonApplicationData,
+                "SIDEY",
+                "Installer",
+                "Logs");
+            DeleteIfSafe(expectedPath, expectedPath);
+        }
+
+        internal static void DeleteIfSafe(string path, string expectedPath)
+        {
+            string fullPath = NormalizePath(path);
+            string normalizedExpectedPath = NormalizePath(expectedPath);
+            if (!string.Equals(fullPath, normalizedExpectedPath, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Refusing to remove an unexpected installer diagnostic path: "
+                    + fullPath);
+            }
+
+            var directory = new DirectoryInfo(fullPath);
+            AssertExpectedPath(directory);
+            directory.Refresh();
+            if (!directory.Exists)
+            {
+                return;
+            }
+
+            DirectoryInfo installer = directory.Parent;
+            DirectoryInfo sidey = installer.Parent;
+            var directoryHandles = new List<SafeFileHandle>();
+            var logHandles = new List<SafeFileHandle>();
+            try
+            {
+                DirectoryInfo[] anchoredDirectories =
+                {
+                    sidey.Parent,
+                    sidey,
+                    installer,
+                    directory,
+                };
+                foreach (DirectoryInfo anchoredDirectory in anchoredDirectories)
+                {
+                    bool isLogDirectory = string.Equals(
+                        anchoredDirectory.FullName,
+                        directory.FullName,
+                        StringComparison.OrdinalIgnoreCase);
+                    SafeFileHandle handle = OpenDirectory(anchoredDirectory.FullName, isLogDirectory);
+                    directoryHandles.Add(handle);
+                    AssertHandlePath(handle, anchoredDirectory.FullName);
+                    AssertHandleType(handle, true);
+                }
+
+                foreach (FileSystemInfo item in directory.EnumerateFileSystemInfos())
+                {
+                    if (!LogFileName.IsMatch(item.Name))
+                    {
+                        throw new InvalidOperationException(
+                            "Refusing to remove an unexpected installer diagnostic entry: "
+                            + item.FullName);
+                    }
+                    SafeFileHandle handle = OpenLog(item.FullName);
+                    logHandles.Add(handle);
+                    AssertHandlePath(handle, item.FullName);
+                    AssertHandleType(handle, false);
+                }
+
+                foreach (SafeFileHandle logHandle in logHandles)
+                {
+                    MarkForDeletion(logHandle);
+                }
+                foreach (SafeFileHandle logHandle in logHandles)
+                {
+                    logHandle.Dispose();
+                }
+                logHandles.Clear();
+
+                MarkForDeletion(directoryHandles[directoryHandles.Count - 1]);
+            }
+            finally
+            {
+                foreach (SafeFileHandle handle in logHandles)
+                {
+                    handle.Dispose();
+                }
+                for (int index = directoryHandles.Count - 1; index >= 0; index--)
+                {
+                    directoryHandles[index].Dispose();
+                }
+            }
+        }
+
+        private static void AssertExpectedPath(DirectoryInfo directory)
+        {
+            DirectoryInfo installer = directory.Parent;
+            DirectoryInfo sidey = installer == null ? null : installer.Parent;
+            if (!string.Equals(directory.Name, "Logs", StringComparison.OrdinalIgnoreCase)
+                || installer == null
+                || !string.Equals(installer.Name, "Installer", StringComparison.OrdinalIgnoreCase)
+                || sidey == null
+                || !string.Equals(sidey.Name, "SIDEY", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Refusing to remove an unexpected installer diagnostic path: "
+                    + directory.FullName);
+            }
+        }
+
+        private static SafeFileHandle OpenDirectory(string path, bool allowDelete)
+        {
+            uint desiredAccess = FileReadAttributes;
+            if (allowDelete)
+            {
+                desiredAccess |= FileListDirectory | DeleteAccess;
+            }
+            return OpenHandle(path, desiredAccess);
+        }
+
+        private static SafeFileHandle OpenLog(string path)
+        {
+            return OpenHandle(path, FileReadAttributes | DeleteAccess);
+        }
+
+        private static SafeFileHandle OpenHandle(string path, uint desiredAccess)
+        {
+            SafeFileHandle handle = CreateFile(
+                path,
+                desiredAccess,
+                FileShareRead | FileShareWrite,
+                IntPtr.Zero,
+                OpenExisting,
+                FileFlagBackupSemantics | FileFlagOpenReparsePoint,
+                IntPtr.Zero);
+            if (handle.IsInvalid)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return handle;
+        }
+
+        private static void AssertHandlePath(SafeFileHandle handle, string expectedPath)
+        {
+            string actualPath = GetFinalPath(handle);
+            if (!string.Equals(
+                actualPath,
+                NormalizePath(expectedPath),
+                StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "Refusing an installer diagnostic path that resolves outside its expected location: "
+                    + actualPath);
+            }
+        }
+
+        private static void AssertHandleType(SafeFileHandle handle, bool expectDirectory)
+        {
+            FileAttributeTagInfo information;
+            if (!GetFileInformationByHandleEx(
+                handle,
+                FileInfoByHandleClass.FileAttributeTagInfo,
+                out information,
+                (uint)Marshal.SizeOf(typeof(FileAttributeTagInfo))))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            if ((information.FileAttributes & FileAttributeReparsePoint) != 0)
+            {
+                throw new InvalidOperationException(
+                    "Refusing to remove installer diagnostics through a reparse point.");
+            }
+            bool isDirectory = (information.FileAttributes & FileAttributeDirectory) != 0;
+            if (isDirectory != expectDirectory)
+            {
+                throw new InvalidOperationException(
+                    "The installer diagnostic entry has an unexpected file type.");
+            }
+        }
+
+        private static string GetFinalPath(SafeFileHandle handle)
+        {
+            var buffer = new StringBuilder(512);
+            while (true)
+            {
+                uint length = GetFinalPathNameByHandle(
+                    handle,
+                    buffer,
+                    (uint)buffer.Capacity,
+                    FileNameNormalized);
+                if (length == 0)
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                if (length < buffer.Capacity)
+                {
+                    return NormalizePath(buffer.ToString());
+                }
+                buffer.Capacity = checked((int)length + 1);
+            }
+        }
+
+        private static string NormalizePath(string path)
+        {
+            string normalized = path;
+            if (normalized.StartsWith("\\\\?\\UNC\\", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = "\\\\" + normalized.Substring(8);
+            }
+            else if (normalized.StartsWith("\\\\?\\", StringComparison.OrdinalIgnoreCase))
+            {
+                normalized = normalized.Substring(4);
+            }
+            return Path.GetFullPath(normalized).TrimEnd(
+                Path.DirectorySeparatorChar,
+                Path.AltDirectorySeparatorChar);
+        }
+
+        private static void MarkForDeletion(SafeFileHandle handle)
+        {
+            var information = new FileDispositionInfo { DeleteFile = true };
+            if (!SetFileInformationByHandle(
+                handle,
+                FileInfoByHandleClass.FileDispositionInfo,
+                ref information,
+                (uint)Marshal.SizeOf(typeof(FileDispositionInfo))))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+        }
+
+        private enum FileInfoByHandleClass
+        {
+            FileDispositionInfo = 4,
+            FileAttributeTagInfo = 9,
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileAttributeTagInfo
+        {
+            internal uint FileAttributes;
+            internal uint ReparseTag;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileDispositionInfo
+        {
+            [MarshalAs(UnmanagedType.Bool)]
+            internal bool DeleteFile;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandleEx(
+            SafeFileHandle file,
+            FileInfoByHandleClass fileInformationClass,
+            out FileAttributeTagInfo fileInformation,
+            uint bufferSize);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle file,
+            StringBuilder filePath,
+            uint filePathLength,
+            uint flags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetFileInformationByHandle(
+            SafeFileHandle file,
+            FileInfoByHandleClass fileInformationClass,
+            ref FileDispositionInfo fileInformation,
+            uint bufferSize);
     }
 
     internal sealed class InstallerFailureException : Exception

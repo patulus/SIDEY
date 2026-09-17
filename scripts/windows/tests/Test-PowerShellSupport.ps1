@@ -88,6 +88,86 @@ try {
     if ($exitCode -ne 64) {
         throw "WinExe process with no arguments returned an unexpected code: $exitCode"
     }
+
+    $ordinaryLogDirectory = Join-Path $testRoot 'ordinary/SIDEY/Installer/Logs'
+    [IO.Directory]::CreateDirectory($ordinaryLogDirectory) | Out-Null
+    [IO.File]::WriteAllText(
+        (Join-Path $ordinaryLogDirectory 'SIDEY-Setup-20260917-150000.log'),
+        'setup failure')
+    [IO.File]::WriteAllText(
+        (Join-Path $ordinaryLogDirectory 'SIDEY-Uninstall-20260917-151000.log'),
+        'uninstall failure')
+    $cleanupType = [Reflection.Assembly]::Load(
+        [IO.File]::ReadAllBytes($HelperPath)).GetType(
+        'Sidey.Setup.Errors.InstallerLogCleanup',
+        $true)
+    $cleanupMethod = $cleanupType.GetMethod(
+        'DeleteIfSafe',
+        [Reflection.BindingFlags]::Static -bor [Reflection.BindingFlags]::NonPublic)
+    if ($null -eq $cleanupMethod) {
+        throw 'Installer diagnostic cleanup test seam was not found.'
+    }
+    $cleanupMethod.Invoke(
+        $null,
+        [object[]][string[]]@($ordinaryLogDirectory, $ordinaryLogDirectory)) | Out-Null
+    if (Test-Path -LiteralPath $ordinaryLogDirectory) {
+        throw 'Installer diagnostic cleanup did not remove an ordinary log directory.'
+    }
+
+    $unsafeLogDirectory = Join-Path $testRoot 'unsafe/SIDEY/Installer/Logs'
+    $externalDirectory = Join-Path $testRoot 'external sentinel'
+    $externalSentinel = Join-Path $externalDirectory 'must-survive.txt'
+    [IO.Directory]::CreateDirectory($unsafeLogDirectory) | Out-Null
+    [IO.Directory]::CreateDirectory($externalDirectory) | Out-Null
+    [IO.File]::WriteAllText($externalSentinel, 'preserve')
+    New-Item -ItemType Junction `
+        -Path (Join-Path $unsafeLogDirectory 'SIDEY-Setup-20260917-152000.log') `
+        -Target $externalDirectory | Out-Null
+    $junctionFailure = $null
+    try {
+        $cleanupMethod.Invoke(
+            $null,
+            [object[]][string[]]@($unsafeLogDirectory, $unsafeLogDirectory)) | Out-Null
+    }
+    catch {
+        $junctionFailure = $_
+    }
+    if ($null -eq $junctionFailure) {
+        throw 'Installer diagnostic cleanup accepted a directory junction.'
+    }
+    if (-not (Test-Path -LiteralPath $unsafeLogDirectory -PathType Container) -or
+        -not (Test-Path -LiteralPath $externalSentinel -PathType Leaf) -or
+        [IO.File]::ReadAllText($externalSentinel) -cne 'preserve') {
+        throw 'Installer diagnostic cleanup crossed a directory junction.'
+    }
+
+    $rootJunctionParent = Join-Path $testRoot 'root junction/SIDEY/Installer'
+    $rootJunctionLogDirectory = Join-Path $rootJunctionParent 'Logs'
+    $rootJunctionTarget = Join-Path $testRoot 'root junction sentinel'
+    $rootJunctionSentinel = Join-Path $rootJunctionTarget 'must-survive.txt'
+    [IO.Directory]::CreateDirectory($rootJunctionParent) | Out-Null
+    [IO.Directory]::CreateDirectory($rootJunctionTarget) | Out-Null
+    [IO.File]::WriteAllText($rootJunctionSentinel, 'preserve')
+    New-Item -ItemType Junction `
+        -Path $rootJunctionLogDirectory `
+        -Target $rootJunctionTarget | Out-Null
+    $rootJunctionFailure = $null
+    try {
+        $cleanupMethod.Invoke(
+            $null,
+            [object[]][string[]]@($rootJunctionLogDirectory, $rootJunctionLogDirectory)) | Out-Null
+    }
+    catch {
+        $rootJunctionFailure = $_
+    }
+    if ($null -eq $rootJunctionFailure) {
+        throw 'Installer diagnostic cleanup accepted a Logs directory junction.'
+    }
+    if (-not (Test-Path -LiteralPath $rootJunctionLogDirectory -PathType Container) -or
+        -not (Test-Path -LiteralPath $rootJunctionSentinel -PathType Leaf) -or
+        [IO.File]::ReadAllText($rootJunctionSentinel) -cne 'preserve') {
+        throw 'Installer diagnostic cleanup crossed the Logs directory junction.'
+    }
 }
 finally {
     $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)

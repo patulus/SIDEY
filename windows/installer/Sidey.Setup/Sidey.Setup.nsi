@@ -218,6 +218,7 @@ Var CleanupFailureDiagnosticDetails
 Var StagingDirectory
 Var RollbackDirectory
 Var SetupMutexHandle
+Var InstallerCompletedCleanly
 
 !macro AcquireSetupMutex HANDLE ACTIVATE_FUNCTION
   System::Call 'kernel32::CreateMutexW(p0, i0, w "${SETUP_MUTEX_NAME}") p.r0 ?e'
@@ -254,6 +255,7 @@ Var SetupMutexHandle
 Function .onInit
   SetRegView 64
   SetShellVarContext all
+  StrCpy $InstallerCompletedCleanly 0
   ReadRegStr $LANGUAGE HKLM "${PRODUCT_REGISTRY_KEY}" "Language"
   ${If} $LANGUAGE == ""
     StrCpy $LANGUAGE ${LANG_ENGLISH}
@@ -457,6 +459,7 @@ Function LaunchSideyAsDesktopUser
   ${EndIf}
   ${If} $0 != 0
     StrCpy $1 $0
+    StrCpy $InstallerCompletedCleanly 0
     Call ResetInstallerError
     StrCpy $InstallerErrorStatus "COMPLETED_WITH_WARNINGS"
     StrCpy $InstallerErrorCategory "LAUNCH_FAILED"
@@ -669,6 +672,8 @@ Section "SIDEY" MainSection
     StrCpy $InstallerErrorCommand "Sidey.InstallTransaction.exe --action Complete"
     StrCpy $InstallerErrorMessage "$(CleanupPending)"
     Call ShowLifecycleError
+  ${Else}
+    StrCpy $InstallerCompletedCleanly 1
   ${EndIf}
   Goto install_complete
 
@@ -780,6 +785,11 @@ Function .onInstFailed
 FunctionEnd
 
 Function .onGUIEnd
+  ${If} $InstallerCompletedCleanly == 1
+    ClearErrors
+    ExecWait '"$PLUGINSDIR\Sidey.InstallerErrorHelper.exe" --remove-installer-logs' $0
+    ClearErrors
+  ${EndIf}
   System::Call 'user32::RemovePropW(p $HWNDPARENT, w "${SETUP_ACTIVATION_PROPERTY}") p.r0'
   Call ReleaseSetupMutex
 FunctionEnd

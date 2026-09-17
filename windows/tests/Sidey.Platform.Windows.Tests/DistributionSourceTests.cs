@@ -440,6 +440,29 @@ public sealed class DistributionSourceTests
     }
 
     [Fact]
+    public void SuccessfulSetupRemovesMachineWideInstallerDiagnosticsAfterLaunchHandling()
+    {
+        string setup = ReadSetupScript();
+        int mainSectionStart = setup.IndexOf("Section \"SIDEY\" MainSection", StringComparison.Ordinal);
+        string mainSection = setup[mainSectionStart..setup.IndexOf("SectionEnd", mainSectionStart, StringComparison.Ordinal)];
+        int complete = mainSection.IndexOf("RunInstallTransaction \"Complete\"", StringComparison.Ordinal);
+        int completedCleanly = mainSection.IndexOf("StrCpy $InstallerCompletedCleanly 1", StringComparison.Ordinal);
+        Assert.True(complete >= 0 && completedCleanly > complete,
+            "Installer diagnostics may only become disposable after transaction cleanup succeeds.");
+
+        int launchStart = setup.IndexOf("Function LaunchSideyAsDesktopUser", StringComparison.Ordinal);
+        string launch = setup[launchStart..setup.IndexOf("FunctionEnd", launchStart, StringComparison.Ordinal)];
+        Assert.Contains("StrCpy $InstallerCompletedCleanly 0", launch, StringComparison.Ordinal);
+
+        int guiEndStart = setup.IndexOf("Function .onGUIEnd", StringComparison.Ordinal);
+        string guiEnd = setup[guiEndStart..setup.IndexOf("FunctionEnd", guiEndStart, StringComparison.Ordinal)];
+        Assert.Contains("${If} $InstallerCompletedCleanly == 1", guiEnd, StringComparison.Ordinal);
+        Assert.Contains("Sidey.InstallerErrorHelper.exe", guiEnd, StringComparison.Ordinal);
+        Assert.Contains("--remove-installer-logs", guiEnd, StringComparison.Ordinal);
+        Assert.DoesNotContain("RMDir /r", guiEnd, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void InstallerRuntimeUsesCompiledHelpersWithoutPowerShellOrTaskkill()
     {
         string setup = ReadSetupScript();
