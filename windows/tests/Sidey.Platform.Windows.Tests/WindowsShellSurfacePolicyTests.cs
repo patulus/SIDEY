@@ -15,17 +15,52 @@ public sealed class WindowsShellSurfacePolicyTests
     [InlineData("explorer", "NotifyIconOverflowWindow")]
     [InlineData("explorer", "Shell_TrayWnd")]
     [InlineData("explorer", "Shell_SecondaryTrayWnd")]
-    public void TaskbarShellSurfacesYieldOverlay(string processName, string windowClass)
+    public void ForegroundShellSurfacesYieldOverlay(string processName, string windowClass)
     {
         Assert.True(WindowsShellSurfacePolicy.ShouldYield(processName, windowClass));
     }
 
-    [Theory]
-    [InlineData("Shell_TrayWnd")]
-    [InlineData("Shell_SecondaryTrayWnd")]
-    public void PersistentTaskbarsAreDetectedForInputYielding(string windowClass)
+    [Fact]
+    public void VisibleTaskbarDoesNotOverrideNormalFullscreenForeground()
     {
-        Assert.True(WindowsShellSurfacePolicy.IsTaskbarWindow(windowClass));
+        nint popupStyle = new(unchecked((long)0x80000000));
+        nint toolWindowStyle = new(0x80);
+        nint taskbar = 101;
+        nint fullscreenWindow = 202;
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [new FakeWindow(
+                taskbar,
+                "Shell_SecondaryTrayWnd",
+                popupStyle,
+                toolWindowStyle)],
+            fullscreenWindow,
+            foregroundShouldYield: false);
+
+        Assert.Equal(nint.Zero, resolver.ForegroundSurface());
+    }
+
+    [Fact]
+    public void VisibleTransientPopupYieldsBeforeNormalForeground()
+    {
+        nint popup = 101;
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [new FakeWindow(popup, "#32768", nint.Zero, nint.Zero)],
+            foreground: 202,
+            foregroundShouldYield: false);
+
+        Assert.Equal(popup, resolver.ForegroundSurface());
+    }
+
+    [Fact]
+    public void ForegroundShellSurfaceYieldsWhenNoTransientPopupExists()
+    {
+        nint foreground = 202;
+        WindowsShellSurfaceResolver resolver = Resolver(
+            [],
+            foreground,
+            foregroundShouldYield: true);
+
+        Assert.Equal(foreground, resolver.ForegroundSurface());
     }
 
     [Theory]
@@ -86,4 +121,34 @@ public sealed class WindowsShellSurfacePolicyTests
             popupStyle,
             toolWindowStyle));
     }
+
+    private static WindowsShellSurfaceResolver Resolver(
+        IReadOnlyList<FakeWindow> visibleWindows,
+        nint foreground,
+        bool foregroundShouldYield) =>
+        new(
+            shouldYield =>
+            {
+                foreach (FakeWindow window in visibleWindows)
+                {
+                    if (shouldYield(window.ClassName, window.Style, window.ExtendedStyle))
+                    {
+                        return window.Handle;
+                    }
+                }
+
+                return nint.Zero;
+            },
+            () => foreground,
+            window =>
+            {
+                Assert.Equal(foreground, window);
+                return foregroundShouldYield;
+            });
+
+    private readonly record struct FakeWindow(
+        nint Handle,
+        string ClassName,
+        nint Style,
+        nint ExtendedStyle);
 }
