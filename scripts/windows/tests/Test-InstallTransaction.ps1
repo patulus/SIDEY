@@ -51,12 +51,11 @@ function Invoke-Helper([string]$Arguments) {
     }
 }
 
-function Invoke-Transaction(
+function Get-TransactionArguments(
     [string]$Action,
-    [string]$StagingDirectory = $staging,
-    [switch]$AllowFailure
+    [string]$StagingDirectory = $staging
 ) {
-    $arguments = @(
+    return @(
         '--action', (ConvertTo-NativeArgument $Action),
         '--install-directory', (ConvertTo-NativeArgument $install),
         '--staging-directory', (ConvertTo-NativeArgument $StagingDirectory),
@@ -64,6 +63,51 @@ function Invoke-Transaction(
         '--version', (ConvertTo-NativeArgument $version),
         '--allow-user-writable-parent-for-tests'
     ) -join ' '
+}
+
+function Start-TransactionProcess([string]$Action) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $transactionExecutable
+    $start.Arguments = Get-TransactionArguments $Action
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardError = $true
+    return [Diagnostics.Process]::Start($start)
+}
+
+function Wait-TransactionPhase(
+    [Diagnostics.Process]$Process,
+    [string]$Phase,
+    [int]$TimeoutMilliseconds
+) {
+    $statePath = $install + '.sidey-transaction.json'
+    $deadline = [DateTimeOffset]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        if ([IO.File]::Exists($statePath)) {
+            try {
+                $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json
+                if ($state.phase -ceq $Phase) {
+                    return $true
+                }
+            }
+            catch {
+                # The helper can replace the state file while this process reads it.
+            }
+        }
+        if ($Process.HasExited) {
+            return $false
+        }
+        Start-Sleep -Milliseconds 25
+    } while ([DateTimeOffset]::UtcNow -lt $deadline)
+    return $false
+}
+
+function Invoke-Transaction(
+    [string]$Action,
+    [string]$StagingDirectory = $staging,
+    [switch]$AllowFailure
+) {
+    $arguments = Get-TransactionArguments $Action $StagingDirectory
     $result = Invoke-Helper $arguments
     if ($AllowFailure) {
         return $result.ExitCode
@@ -130,6 +174,91 @@ try {
         'Rollback did not restore the previous install.'
     Assert-True (-not [IO.Directory]::Exists($rollback)) `
         'Rollback left its backup directory behind.'
+
+    Remove-Item -LiteralPath $install -Recurse -Force
+    [IO.Directory]::CreateDirectory((Join-Path $install 'Runtime')) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $install 'SIDEY.exe'), 'framework-dependent-launcher')
+    [IO.File]::WriteAllText((Join-Path $install 'Runtime/SIDEY.Host.exe'), 'framework-dependent-host')
+    [IO.File]::WriteAllText(
+        (Join-Path $install 'Runtime/SIDEY.Host.runtimeconfig.json'),
+        '{"runtimeOptions":{"framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}')
+    Invoke-Transaction Prepare
+    New-Payload 'self-contained'
+    $lockedFrameworkDependentHost = [IO.File]::Open(
+        (Join-Path $install 'Runtime/SIDEY.Host.exe'),
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::None)
+    $activationProcess = $null
+    try {
+        $activationProcess = Start-TransactionProcess 'Activate'
+        Assert-True (Wait-TransactionPhase $activationProcess 'prepared' 5000) `
+            'Activate did not reach the prepared phase while the framework-dependent host was locked.'
+        Assert-True (-not $activationProcess.WaitForExit(500)) `
+            'Activate did not remain alive while retrying the transient framework-dependent host lock.'
+        $lockedFrameworkDependentHost.Dispose()
+        $lockedFrameworkDependentHost = $null
+        Assert-True ($activationProcess.WaitForExit(10000)) `
+            'Activate did not finish after the framework-dependent host lock was released.'
+        $activationError = $activationProcess.StandardError.ReadToEnd().Trim()
+        Assert-True ($activationProcess.ExitCode -eq 0) `
+            "Activate did not retry a transient framework-dependent host lock: $activationError"
+    }
+    finally {
+        if ($null -ne $activationProcess) {
+            if (-not $activationProcess.HasExited) {
+                $activationProcess.Kill()
+                $activationProcess.WaitForExit()
+            }
+            $activationProcess.Dispose()
+        }
+        if ($null -ne $lockedFrameworkDependentHost) {
+            $lockedFrameworkDependentHost.Dispose()
+        }
+    }
+    Assert-True ((Get-Content -LiteralPath (Join-Path $install 'SIDEY.exe') -Raw) -ceq 'self-contained') `
+        'Activate did not promote the self-contained payload after the transient lock cleared.'
+    Assert-True ([IO.File]::Exists((Join-Path $rollback 'Runtime/SIDEY.Host.runtimeconfig.json'))) `
+        'Activate did not preserve the framework-dependent installation for rollback.'
+    Invoke-Transaction Rollback
+
+    Invoke-Transaction Prepare
+    New-Payload 'blocked-self-contained'
+    $persistentlyLockedHost = [IO.File]::Open(
+        (Join-Path $install 'Runtime/SIDEY.Host.exe'),
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::None)
+    $blockedActivationProcess = $null
+    try {
+        $blockedActivationProcess = Start-TransactionProcess 'Activate'
+        Assert-True (Wait-TransactionPhase $blockedActivationProcess 'prepared' 5000) `
+            'Activate did not reach the prepared phase for a persistent host lock.'
+        Assert-True (-not $blockedActivationProcess.WaitForExit(1000)) `
+            'Activate failed immediately instead of retrying the persistent host lock.'
+        Assert-True ($blockedActivationProcess.WaitForExit(10000)) `
+            'Activate did not stop after the bounded retry window for a persistent host lock.'
+        $blockedActivationError = $blockedActivationProcess.StandardError.ReadToEnd().Trim()
+        Assert-True ($blockedActivationProcess.ExitCode -ne 0) `
+            "Activate accepted a persistently locked framework-dependent host: $blockedActivationError"
+    }
+    finally {
+        if ($null -ne $blockedActivationProcess) {
+            if (-not $blockedActivationProcess.HasExited) {
+                $blockedActivationProcess.Kill()
+                $blockedActivationProcess.WaitForExit()
+            }
+            $blockedActivationProcess.Dispose()
+        }
+        $persistentlyLockedHost.Dispose()
+    }
+    Assert-True ((Get-Content -LiteralPath (Join-Path $install 'Runtime/SIDEY.Host.exe') -Raw) `
+            -ceq 'framework-dependent-host') `
+        'A persistent activation lock changed the existing framework-dependent install.'
+    Invoke-Transaction Rollback
+    Remove-Item -LiteralPath $install -Recurse -Force
+    [IO.Directory]::CreateDirectory($install) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $install 'marker.txt'), 'old')
 
     $rolledBackState = [ordered]@{
         schemaVersion = 1

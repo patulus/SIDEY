@@ -8,6 +8,7 @@ using System.Runtime.InteropServices.ComTypes;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32;
 
 namespace Sidey.Installer
@@ -126,6 +127,10 @@ namespace Sidey.Installer
 
         private sealed class InstallTransaction
         {
+            // A stopped framework-dependent host or a security scanner can keep
+            // the previous Runtime tree busy briefly. Keep replacement bounded.
+            private const int ActivationMoveAttempts = 20;
+            private const int ActivationMoveRetryDelayMilliseconds = 250;
             private const string TransactionRegistryPath = @"Software\SIDEY\InstallerTransaction";
             private const string InstallerRegistryPath = @"Software\SIDEY\Installer";
             private const string UninstallRegistryPath =
@@ -329,11 +334,11 @@ namespace Sidey.Installer
                 {
                     if (Directory.Exists(installPath))
                     {
-                        Directory.Move(installPath, rollbackPath);
+                        MoveDirectoryForActivation(installPath, rollbackPath);
                         WriteState("previous-moved");
                     }
                     WriteState("activating");
-                    Directory.Move(stagingPath, installPath);
+                    MoveDirectoryForActivation(stagingPath, installPath);
                     WriteState("active");
                 }
                 catch
@@ -345,6 +350,29 @@ namespace Sidey.Installer
                     }
                     throw;
                 }
+            }
+
+            private static void MoveDirectoryForActivation(string source, string destination)
+            {
+                for (int attempt = 1; ; attempt++)
+                {
+                    try
+                    {
+                        Directory.Move(source, destination);
+                        return;
+                    }
+                    catch (Exception exception) when (
+                        IsRetryableMoveFailure(exception)
+                        && attempt < ActivationMoveAttempts)
+                    {
+                        Thread.Sleep(ActivationMoveRetryDelayMilliseconds);
+                    }
+                }
+            }
+
+            private static bool IsRetryableMoveFailure(Exception exception)
+            {
+                return exception is IOException || exception is UnauthorizedAccessException;
             }
 
             private void CleanupForUninstall()

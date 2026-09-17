@@ -432,8 +432,6 @@ public sealed class DistributionSourceTests
                 < onInit.IndexOf("\"InstalledVersion\"", StringComparison.Ordinal),
             "Interrupted installation recovery must precede version classification.");
 
-        Assert.Contains("Directory.Move(installPath, rollbackPath)", transaction, StringComparison.Ordinal);
-        Assert.Contains("Directory.Move(stagingPath, installPath)", transaction, StringComparison.Ordinal);
         Assert.Contains("UndoTransaction", transaction, StringComparison.Ordinal);
         Assert.Contains("FileAttributes.ReparsePoint", transaction, StringComparison.Ordinal);
         Assert.Contains("AssertSecureTransactionParent", transaction, StringComparison.Ordinal);
